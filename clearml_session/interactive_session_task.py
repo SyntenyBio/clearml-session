@@ -1287,8 +1287,6 @@ def main():
         print("External TCP router configured, disabling `public_ip` request")
         param["public_ip"] = False
 
-    run_user_init_script(task)
-
     # restore workspace if exists
     # notice, if "store_workspace" is not set we will Not restore the workspace
     try:
@@ -1318,6 +1316,8 @@ def main():
             "_SERVICE": "EXTERNAL_TCP",
         })
         task.set_system_tags((task.get_system_tags() or []) + ["external_service"])
+
+    run_user_init_script(task)
 
     start_vscode_server(hostname, hostnames, param, task, env)
 
