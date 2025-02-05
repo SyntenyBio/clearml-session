@@ -535,7 +535,7 @@ def get_user_inputs(args, parser, state, client):
             raise NonInteractiveError("Using `--yes` but no queue provided or previously used")
         print("Using previous queue (resource) '{}'".format(state["queue"]))
     elif state.get('queue'):
-        choice = input('Use previous queue (resource) \'{}\' [Y]/n? '.format(state['queue']))
+        choice = input('Use queue (resource) \'{}\' [Y]/n? '.format(state['queue']))
         if str(choice).strip().lower() in ('n', 'no'):
             ask_queues = True
 
