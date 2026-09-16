@@ -8,6 +8,7 @@ import sys
 from copy import deepcopy
 import getpass
 from functools import partial
+from glob import glob
 from tempfile import mkstemp, gettempdir, mkdtemp
 from time import sleep, time
 from datetime import datetime
@@ -84,6 +85,37 @@ sync_runtime_property = "workspace_sync_ts"
 sync_workspace_creating_id = "created_by_session"
 __poor_lock = []
 __allocated_ports = []
+
+
+def _venv_site_packages(venv_path):
+    found = glob(os.path.join(venv_path, 'lib', 'python*', 'site-packages'))
+    return found[0] if found else None
+
+
+def _create_user_venv(task_venv, environment):
+    """
+    Create the interactive user's virtual environment, layered on top of the task venv.
+
+    The user environment is a real venv of its own, so replacing it (`uv sync --active`,
+    `uv venv`) or upgrading packages inside it cannot touch the environment this process
+    is executing from. Everything the agent installed into the task venv stays importable
+    through a .pth file, so the user still gets jupyter/clearml/the task requirements.
+    """
+    python = os.path.join(task_venv, 'bin', 'python')
+    if not os.path.exists(python):
+        python = sys.executable
+
+    if not os.path.exists(os.path.join(environment, 'bin', 'activate')):
+        # --system-site-packages exposes the base interpreter's packages (e.g. a CUDA image)
+        subprocess.check_call([python, '-m', 'venv', '--system-site-packages', environment])
+
+    task_site_packages = _venv_site_packages(task_venv)
+    user_site_packages = _venv_site_packages(environment)
+    if task_site_packages and user_site_packages and task_site_packages != user_site_packages:
+        with open(os.path.join(user_site_packages, '_clearml_task_venv.pth'), 'wt') as f:
+            f.write(task_site_packages + '\n')
+
+    return environment
 
 
 def get_free_port(range_min, range_max):
@@ -861,15 +893,36 @@ def setup_user_env(param, task):
     # target source config
     source_conf = '~/.clearmlrc'
 
-    # create symbolic link to the venv
+    # Create the user's virtual environment at ~/environment.
+    #
+    # Notice this is deliberately *not* a link to the venv this process is executing from.
+    # Every interactive shell activates ~/environment (see below), and tools that honor
+    # VIRTUAL_ENV treat the active environment as a write - or replace - target:
+    # `uv sync --active` rebuilds it from scratch when the project's requires-python does
+    # not match, `pip install -U` swaps packages in place. Doing either to the task venv
+    # deletes the interpreter and site-packages out from under the still running session,
+    # which then fails every backend request ("Could not find a suitable TLS CA certificate
+    # bundle") and retries forever until the task is killed.
+    task_venv = os.path.abspath(os.path.join(os.path.abspath(sys.executable), '..', '..'))
     environment = os.path.expanduser('~/environment')
     # noinspection PyBroadException
     try:
-        os.symlink(os.path.abspath(os.path.join(os.path.abspath(sys.executable), '..', '..')), environment)
-        print('Virtual environment are available at {}'.format(environment))
+        if Path(os.path.join(task_venv, 'etc', 'conda', 'activate.d')).exists():
+            # conda environments cannot be layered, keep pointing at the task environment
+            os.symlink(task_venv, environment)
+        else:
+            _create_user_venv(task_venv, environment)
+        print('Virtual environment is available at {} (session packages from {})'.format(
+            environment, task_venv))
     except Exception as e:
-        print("Error: Exception while trying to create symlink. The Application will continue...")
+        print("Error: Exception while trying to create the user virtual environment. "
+              "Falling back to the session environment...")
         print(e)
+        # noinspection PyBroadException
+        try:
+            os.symlink(task_venv, environment)
+        except Exception as ex:
+            print(ex)
 
     # set default user credentials
     if param.get("user_key") and param.get("user_secret"):
